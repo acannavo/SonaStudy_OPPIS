@@ -11,8 +11,11 @@ path:
 
 ## Status
 
-Project scaffold only. Physics modules are stubs — see each file's docstring
-for what it will contain and in what order we're building it.
+- `constants.py` — done, tested (4 tests).
+- `hamiltonian.py` — done, tested (21 tests, including a numeric-vs-analytic
+  Breit-Rabi cross-check across both atom states).
+- Everything else is still a stub — see each file's docstring for what it
+  will contain and in what order we're building it.
 
 ## Setup (Windows / VS Code)
 
@@ -52,7 +55,10 @@ results/figures/    output plots (gitignored)
 ## Build order
 
 1. `constants.py` — done.
-2. `hamiltonian.py` — H0 eigensystem + interaction matrix.
+2. `hamiltonian.py` — done. H0 (fixed B=0 eigenbasis) + interaction matrix
+   V(r,t), derived independently from J/I ladder operators and verified
+   against Kannis Eq. 6.23/6.24, plus a numeric-vs-closed-form Breit-Rabi
+   agreement test (Eq. 3.18a-d) across a field sweep for both atom states.
 3. `fields/two_solenoid.py` — analytic Bz(z), Br(r,z).
 4. `propagator.py` — single-particle stepper + self-tests.
 5. `beam.py`, `sweep.py` — beam averaging + current sweep.
