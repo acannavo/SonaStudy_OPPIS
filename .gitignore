@@ -1,0 +1,24 @@
+# byte-compiled / cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# virtual environments (should live OUTSIDE this OneDrive folder anyway)
+venv/
+.venv/
+
+# data — raw measurements and generated/processed files, not code
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# generated figures
+results/figures/*
+!results/figures/.gitkeep
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/settings.json
