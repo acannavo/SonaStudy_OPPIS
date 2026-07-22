@@ -1,21 +1,34 @@
 """
 base.py
 =======
-STUB -- defines the interface, not yet implemented.
+Common interface every magnetic-field provider implements, so the
+propagator and sweep code never need to know whether the field came from
+a synthetic test profile, an OPERA2D export (toy two-solenoid geometry
+or the full OPPIS model), or -- eventually -- a measured OPPIS scan
+wrapped from MagScan_Ana4.
 
-The common contract every field provider (two_solenoid, measured_map)
-must satisfy, so sweep.py and propagator.py never need to know which one
-they're talking to:
-
-    class FieldProvider:
-        def Bz(self, z: np.ndarray) -> np.ndarray: [Tesla]
-        def dBz_dz(self, z: np.ndarray) -> np.ndarray: [Tesla / m]
-        def Br(self, r: float, z: np.ndarray) -> np.ndarray:
-            # via Br = -(r/2) * dBz/dz, OR measured Br if available
-        def scale(self, current: float) -> "FieldProvider":
-            # returns a rescaled copy for a different coil current
-
-Depends on: numpy only
+All providers work in SI units (meters, Tesla) once loaded, regardless
+of what units the source file used.
 """
 
-raise NotImplementedError("fields/base.py not yet built -- see README build order")
+import numpy as np
+
+
+class FieldProvider:
+    """Abstract interface. Concrete providers implement these methods."""
+
+    def Bz(self, z):
+        """Longitudinal field [T] at position(s) z [m]."""
+        raise NotImplementedError
+
+    def dBz_dz(self, z):
+        """dBz/dz [T/m] at position(s) z [m]."""
+        raise NotImplementedError
+
+    def Br(self, r, z):
+        """Radial field [T] at radius r [m], position(s) z [m]."""
+        raise NotImplementedError
+
+    def z_range(self):
+        """(z_min, z_max) [m] over which this provider is valid."""
+        raise NotImplementedError

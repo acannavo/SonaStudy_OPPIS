@@ -1,6 +1,7 @@
-"""sona.fields — interchangeable magnetic-field providers.
+"""sona.fields — magnetic-field providers.
 
-Both two_solenoid.py (Phase 1, analytic) and measured_map.py (Phase 2,
-from MagScan_Ana4 output) implement the same interface defined in
-base.py, so sweep.py can use either without modification.
+One generic CSV-based provider (csv_field.CSVFieldProvider) handles every
+source: a synthetic test field, an OPERA2D export of the simplified
+two-solenoid geometry, or later the full OPPIS geometry. The propagator
+only ever talks to the FieldProvider interface defined in base.py.
 """

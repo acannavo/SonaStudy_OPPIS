@@ -14,6 +14,13 @@ path:
 - `constants.py` — done, tested (4 tests).
 - `hamiltonian.py` — done, tested (21 tests, including a numeric-vs-analytic
   Breit-Rabi cross-check across both atom states).
+- `fields/` — done, tested (13 tests). One generic CSV-based provider
+  (`csv_field.CSVFieldProvider`) handles every field source: synthetic
+  test data, OPERA2D exports (toy two-solenoid geometry now, full OPPIS
+  geometry later), or eventually a wrapped MagScan_Ana4 measurement.
+  `scripts/generate_synthetic_field.py` produces a physically-motivated
+  (on-axis Biot-Savart, two opposed coils) synthetic field as a stand-in
+  for OPERA2D until real exports exist -- same CSV format either way.
 - Everything else is still a stub — see each file's docstring for what it
   will contain and in what order we're building it.
 
@@ -41,13 +48,18 @@ src/sona/
     beam.py             radial / Gaussian beam averaging
     sweep.py            current-sweep orchestration -> |c_k|^2(I)
     fields/
-        base.py            common field-provider interface
-        two_solenoid.py    Phase 1: analytic two-coil field
-        measured_map.py    Phase 2: wraps MagScan_Ana4 output
+        base.py            FieldProvider interface: Bz(z), dBz_dz(z), Br(r,z)
+        csv_field.py        CSVFieldProvider -- the one implementation,
+                             used for synthetic test fields, OPERA2D
+                             exports (any geometry), and eventually
+                             wrapped MagScan_Ana4 measurements
 
 tests/              pytest: norm conservation, adiabatic limit, etc.
-scripts/            runnable drivers (e.g. Kannis reproduction)
-data/raw/           input CSVs (gitignored)
+scripts/            runnable drivers
+    generate_synthetic_field.py   synthetic two-opposed-coil test field
+                                   (on-axis Biot-Savart), stand-in for
+                                   OPERA2D until real exports exist
+data/raw/           input CSVs (gitignored -- regenerate via scripts/)
 data/processed/     cached/derived data (gitignored)
 results/figures/    output plots (gitignored)
 ```
@@ -59,8 +71,14 @@ results/figures/    output plots (gitignored)
    V(r,t), derived independently from J/I ladder operators and verified
    against Kannis Eq. 6.23/6.24, plus a numeric-vs-closed-form Breit-Rabi
    agreement test (Eq. 3.18a-d) across a field sweep for both atom states.
-3. `fields/two_solenoid.py` — analytic Bz(z), Br(r,z).
-4. `propagator.py` — single-particle stepper + self-tests.
+3. `fields/` — done. Generic CSVFieldProvider (z, Bz[, Br]) with PCHIP
+   interpolation and an exact analytic derivative for dBz/dz; Br derived
+   via the Maxwell relation if not supplied. Validated against a known
+   analytic tanh-field CSV (interpolation correctness) and a physically
+   real synthetic two-opposed-coil Biot-Savart field (Sona-reversal
+   symmetry checks). Same code path will read future OPERA2D exports.
+4. `propagator.py` — matrix-exponential stepper + self-tests (norm
+   conservation, adiabatic limit) -- next.
 5. `beam.py`, `sweep.py` — beam averaging + current sweep.
 6. Reproduce Kannis Fig. 6.10 → validation checkpoint.
-7. `fields/measured_map.py` — swap in real OPPIS data.
+7. Swap in real OPERA2D / OPPIS field data.
