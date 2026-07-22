@@ -14,29 +14,58 @@ path:
 - `constants.py` — done, tested (4 tests).
 - `hamiltonian.py` — done, tested (21 tests, including a numeric-vs-analytic
   Breit-Rabi cross-check across both atom states).
-- `fields/` — done, tested (13 tests). One generic CSV-based provider
-  (`csv_field.CSVFieldProvider`) handles every field source: synthetic
-  test data, OPERA2D exports (toy two-solenoid geometry now, full OPPIS
-  geometry later), or eventually a wrapped MagScan_Ana4 measurement.
-  `scripts/generate_synthetic_field.py` produces a physically-motivated
-  (on-axis Biot-Savart, two opposed coils) synthetic field as a stand-in
-  for OPERA2D until real exports exist -- same CSV format either way.
+- `fields/` — done, tested (13 tests). Generic CSVFieldProvider handles
+  synthetic test data now, OPERA2D exports (any geometry) later.
+- `propagator.py` — done, tested (18 tests). Matrix-exponential stepper
+  (unitary by construction) + solve_ivp cross-check + kinetic-energy ->
+  velocity helper. On-axis (r=0, Br=0) validated two ways:
+    - alpha1 / beta3 shown to be EXACT eigenstates (zero transfer, any
+      Bz(t)) -- confirms the Hamiltonian derivation, not just the stepper.
+    - alpha2 / beta4 show genuine adiabatic <-> diabatic crossing physics
+      as velocity is scanned.
+  **Finding:** at the real 3 keV OPPI proton velocity, the synthetic
+  coil's peak field (~48 G) is below B_c (63 mT metastable), so the
+  on-axis alpha2/beta4 crossing is deeply adiabatic -- negligible
+  population transfer. On-axis alone will not reproduce Sona
+  oscillations at realistic energy; the interesting physics needs the
+  off-axis Br coupling (alpha1<->alpha2, alpha1<->beta4, etc.), which
+  needs a finite beam radius.
+- **Off-axis exploration** (`scripts/inspect_offaxis.py`, exploratory --
+  not part of the tested core, no assertions) -- confirmed the above:
+  starting in alpha1 at r=0 it's frozen (matches the on-axis proof);
+  turning on r makes the off-diagonal alpha1<->alpha2 and alpha1<->beta4
+  matrix elements nonzero and population visibly transfers, growing with
+  r. An extended (unphysically large radius) scan shows genuine
+  Rabi-oscillation behavior -- population returns toward alpha1 and
+  ripples at larger r -- confirming the coupling mechanism works as
+  designed, though real Sona oscillations are seen sweeping *coil
+  current* at a fixed physical beam radius, which is what `sweep.py`
+  will do.
 - Everything else is still a stub — see each file's docstring for what it
   will contain and in what order we're building it.
 
-## Setup (Windows / VS Code)
+## Setup (Windows / VS Code / Anaconda)
 
-Create the virtual environment **outside** this OneDrive-synced folder to
-avoid sync lag / file locks:
+Using Anaconda rather than a bare venv avoids OneDrive sync issues
+automatically, since conda environments live under your Anaconda
+install (e.g. `C:\Users\<you>\AppData\Local\anaconda3\envs\`), outside
+any OneDrive-synced folder.
+
+From an **Anaconda Prompt**:
 
 ```powershell
-python -m venv C:\Users\acannavo\venvs\sona
-C:\Users\acannavo\venvs\sona\Scripts\activate
+conda create -n sona python=3.11
+conda activate sona
+cd "C:\Users\<you>\OneDrive - Brookhaven National Laboratory\SonaSimulation"
 pip install -r requirements.txt
 ```
 
-In VS Code: `Ctrl+Shift+P` → "Python: Select Interpreter" → point at
-`C:\Users\acannavo\venvs\sona\Scripts\python.exe`.
+First time using `conda activate` in a regular PowerShell terminal
+(rather than Anaconda Prompt)? Run `conda init powershell` once, then
+close and reopen the terminal.
+
+In VS Code: `Ctrl+Shift+P` → "Python: Select Interpreter" → pick the
+`sona` environment (path ends in `envs\sona\python.exe`).
 
 ## Layout
 
@@ -59,6 +88,12 @@ scripts/            runnable drivers
     generate_synthetic_field.py   synthetic two-opposed-coil test field
                                    (on-axis Biot-Savart), stand-in for
                                    OPERA2D until real exports exist
+    inspect_offaxis.py            EXPLORATORY, not tested -- prints the
+                                   Hamiltonian/eigenstates at a field
+                                   point and plots field shape (Bz, Br)
+                                   and off-axis trajectories, for
+                                   building intuition. Run any time:
+                                       python scripts/inspect_offaxis.py
 data/raw/           input CSVs (gitignored -- regenerate via scripts/)
 data/processed/     cached/derived data (gitignored)
 results/figures/    output plots (gitignored)
@@ -77,8 +112,16 @@ results/figures/    output plots (gitignored)
    analytic tanh-field CSV (interpolation correctness) and a physically
    real synthetic two-opposed-coil Biot-Savart field (Sona-reversal
    symmetry checks). Same code path will read future OPERA2D exports.
-4. `propagator.py` — matrix-exponential stepper + self-tests (norm
-   conservation, adiabatic limit) -- next.
-5. `beam.py`, `sweep.py` — beam averaging + current sweep.
+4. `propagator.py` — done. Matrix-exponential stepper + solve_ivp cross-
+   check, validated on-axis (r=0): alpha1/beta3 exactly frozen, alpha2/
+   beta4 show real adiabatic-to-diabatic crossing physics vs velocity.
+   Finding: on-axis alone is too adiabatic at 3 keV to reproduce Sona
+   oscillations -- off-axis (Br) coupling is essential.
+   Off-axis (r>0) explored via `scripts/inspect_offaxis.py`: confirms
+   alpha1 population transfers once Br != 0, growing with r, with
+   genuine Rabi-oscillation structure at larger (unphysical) r. Uses the
+   same `propagate()` -- no new production code needed for r>0, since it
+   was written generally from the start.
+5. `beam.py`, `sweep.py` — beam averaging + current sweep -- next.
 6. Reproduce Kannis Fig. 6.10 → validation checkpoint.
 7. Swap in real OPERA2D / OPPIS field data.
