@@ -1,0 +1,418 @@
+# Sona Transition Simulation — Project Handoff / State Summary
+ 
+**Purpose of this document:** everything needed to resume development in a fresh
+chat without re-deriving what's already been established. Paste this in as
+context at the start of a new conversation.
+ 
+**Project location:** `C:\Users\acannavo\OneDrive - Brookhaven National Laboratory\SonaSimulation`
+**Environment:** conda env named `sona` (Python 3.11), created via Anaconda Prompt
+(NOT a bare venv — avoids OneDrive sync issues since conda envs live under
+`AppData\Local\anaconda3\envs\`). Activate with `conda activate sona`, then
+`pip install -r requirements.txt` if needed. Run tests with `pytest -v` from
+the project root (a `pytest.ini` with `pythonpath = src` is already set up so
+imports work without path hacks).
+ 
+**Git:** initialized, commits so far track each module as it was completed.
+`.gitignore` excludes `data/raw`, `data/processed`, `results/figures`,
+caches, and environments.
+ 
+**Sync status (checked 2026-09-29 against GitHub `acannavo/SonaStudy_OPPIS`
+commit `30d7f04` and against the `code/` folder of the status-note source zip):**
+the *tracked* code is NOT identical to what Sections 2-3 below describe.
+- `constants.py`, `hamiltonian.py`, `propagator.py`: byte-identical in repo and
+  zip. `hamiltonian.py` has **no** `build_H_hydrogen_batch`, and `propagator.py`
+  is the per-step Python-loop version (no batched `eigh`). The "vectorized,
+  ~6x faster" version described in Section 3 is therefore either unpushed or
+  not yet written -- **push it, or delete that description.**
+- `beam.py`: real implementation in the zip; only a 386-byte STUB in the repo.
+- `sweep.py`: stub everywhere (expected).
+- `tests/`: repo collects 52 tests (39 pass, 13 skipped -- reason not checked;
+  probably gitignored data CSVs), not the 61 quoted in Section 2. `test_beam.py`
+  is absent from the repo.
+- `metastable_H_time.nb` (Mathematica reference) is not in the repo.
+Items marked **[unverified in repo]** come from earlier sessions.
+
+---
+ 
+## 1. Project goal
+ 
+Simulate hyperfine-substate population evolution of a hydrogen atom through a
+Sona transition (magnetic field reversal), for two purposes:
+1. Validate against **metastable 2S₁/₂** hydrogen measurements (Kannis 2023
+   thesis, Engels et al.) — the FZJ Lamb-shift polarimeter data.
+2. Predict **ground-state 1S₁/₂** proton polarization for the BNL RHIC OPPIS,
+   eventually using real OPERA2D field maps.
+Target deliverable: a contribution to the PSTP conference (Mito, Japan).
+Reference material (in project files): Kannis (2023) thesis (primary source —
+Ch.3 theory, Ch.6 numerical method), Engels et al. 2021/2024, Kponou et al.
+2007, **Antishev & Belov 2008** (critical — see Section 5 below),
+**Kannis et al. 2022, "New Application of a Sona Transition Unit," JPS Conf.
+Proc. 37, 021209 (SPIN2021 proceedings)** — critical, gives the explicit
+apparatus-level (spinfilter-to-spinfilter) picture of alpha1<->beta3, the
+Br-as-loss-channel statement, and the Fig. 1 Breit-Rabi arrow diagram that
+Section 5's two-branch mechanism is built on — MagScan_Ana4.py (existing lab
+tool for processing real OPPIS field-map measurements).
+ 
+---
+ 
+## 2. Repository structure
+ 
+```
+SonaSimulation/
+├── README.md              <- also tracks build order / status, keep in sync
+├── requirements.txt
+├── pytest.ini
+├── .gitignore
+├── src/sona/
+│   ├── __init__.py
+│   ├── constants.py        [DONE] atomic parameters, swappable metastable/ground
+│   ├── hamiltonian.py       [DONE] H0 + V(Bz,Br,phi), scalar (batched: unverified in repo)
+│   ├── propagator.py        [DONE] matrix-exponential unitary stepper (loop version in repo)
+│   ├── beam.py              [DONE locally; STUB in GitHub repo] Gaussian radial beam averaging
+│   ├── sweep.py             [STUB] current-sweep orchestration -- NOT STARTED
+│   └── fields/
+│       ├── __init__.py
+│       ├── base.py          [DONE] FieldProvider interface
+│       └── csv_field.py      [DONE] generic CSV-based field provider
+├── tests/                  61 tests quoted [repo: 52 collected, 39 pass / 13 skipped]
+│   ├── test_constants.py    (4)
+│   ├── test_hamiltonian.py  (25, includes Breit-Rabi agreement + batch-vs-scalar)
+│   ├── test_csv_field.py    (8)
+│   ├── test_synthetic_field.py (5)
+│   ├── test_propagator.py   (14)
+│   └── test_beam.py         (7)
+├── scripts/
+│   ├── generate_synthetic_field.py   synthetic two-coil test field (Biot-Savart)
+│   └── inspect_offaxis.py            EXPLORATORY, not tested -- prints
+│                                       matrices/eigenstates, plots field shape
+│                                       + off-axis trajectories. Rerun anytime:
+│                                       python scripts/inspect_offaxis.py
+├── data/raw/                gitignored; synthetic_two_solenoid.csv regenerated
+│                            by generate_synthetic_field.py
+└── results/figures/         gitignored; regenerated by scripts
+```
+ 
+---
+ 
+## 3. Module APIs (what's callable right now)
+ 
+**`constants.py`**
+```python
+from sona.constants import AtomState, get_hyperfine_params
+params = get_hyperfine_params(AtomState.METASTABLE_2S)  # or .GROUND_1S
+params.A_Hz, params.A_J, params.gJ, params.gI, params.B_critical_T
+```
+Swapping metastable ↔ ground state is exactly this one enum argument.
+ 
+**`hamiltonian.py`**
+```python
+from sona.hamiltonian import (H0_hydrogen, interaction_matrix_hydrogen,
+    build_H_hydrogen, build_H_hydrogen_batch,  # batch: NOT in repo copy
+    breit_rabi_energies_hydrogen,
+    BASIS_LABELS_H)  # = ("alpha1","alpha2","beta3","beta4")
+H = build_H_hydrogen(Bz, Br, phi, params)          # scalar, 4x4 complex
+H_stack = build_H_hydrogen_batch(Bz_arr, Br_arr, phi, params)  # (N,4,4), for speed
+```
+Deuterium (I=1) raises `NotImplementedError` everywhere — not yet implemented.
+ 
+**`fields/csv_field.py`**
+```python
+from sona.fields.csv_field import CSVFieldProvider
+field = CSVFieldProvider(path, z_col="z", bz_col="Bz", br_col=None,
+                          z_unit="cm", b_unit="G", br_reference_radius_m=None)
+field.Bz(z), field.dBz_dz(z), field.Br(r, z), field.z_range()
+```
+One provider handles synthetic test data, OPERA2D exports (any geometry), or
+eventually wrapped MagScan_Ana4 measurements — same interface throughout.
+ 
+**`propagator.py`**
+```python
+from sona.propagator import kinetic_energy_to_velocity, propagate, estimate_dt
+v = kinetic_energy_to_velocity(3000.0)   # 3 keV -> 7.58e5 m/s (uses M_PROTON; see Sec. 9)
+a_final = propagate(v, field, params, initial_state, r=0.0, phi=0.0, dt=None)
+a_final, traj = propagate(..., return_trajectory=True)  # traj: t, z, pop arrays
+```
+Internally (per the local version, **[unverified in repo]**): batched
+Hamiltonian construction + batched eigh across all steps of a trajectory (NOT
+a per-step Python loop — that was a real ~6x performance bug, fixed). The
+GitHub / zip copy is still the per-step loop version.
+If calling `propagate()` many times (e.g. in a loop over r),
+**compute `dt` once via `estimate_dt()` and pass it explicitly** — otherwise
+each call re-scans the whole field, which is slow (this is exactly what
+`beam.py` does internally).
+ 
+**`beam.py`**
+```python
+from sona.beam import gaussian_radial_weight, beam_average_populations
+avg_pop = beam_average_populations(v, field, params, initial_state, sigma_m,
+                                    r_max_sigma=5.0, n_r=81, phi=0.0)
+```
+ 
+---
+ 
+## 4. What's validated, and how (don't re-derive these — reuse them)
+ 
+- **Breit-Rabi agreement** (`test_hamiltonian.py::test_breit_rabi_agreement`):
+  numerically diagonalized H0+V(Bz,Br=0) matches the closed-form Breit-Rabi
+  energies (Kannis Eq. 3.18a-d) to `rtol=1e-10`, both atom states, 25 field
+  points spanning ±3 B_c. Strongest available check on the Hamiltonian.
+- **On-axis exact freezing**: alpha1, beta3 are *exact* eigenstates for any
+  Bz(t) when Br=0 (structural: `V[0,2]=V[2,0]=0` always). Verified both
+  analytically and by direct propagation (`test_alpha1_and_beta3_frozen_on_axis`).
+- **Propagator cross-check**: matrix-exponential stepper agrees with an
+  independent `solve_ivp` integration of the same Schrodinger equation.
+- **Step-size convergence**: explicitly checked oversampling from 5x to 240x;
+  default (30x) agrees with the finest tested to 2.5e-8 in population — solidly
+  converged, checked, not assumed.
+- **Beam averaging**: Gaussian weight normalizes to 1 (checked against an
+  independent `scipy.quad`, not just our own Simpson integration);
+  beam-averaged populations sum to 1; sigma->0 recovers the on-axis result;
+  larger sigma gives monotonically more transfer (matches physical reasoning
+  worked out *before* writing the code).
+- **Batched Hamiltonian == scalar Hamiltonian**, pointwise, for random field
+  values (`test_batched_H_matches_scalar_H_pointwise`) — the fast path used by
+  the propagator is checked against the already-validated slow path.
+---
+ 
+## 5. IMPORTANT: corrected physics understanding (read this before continuing —
+##    this supersedes an earlier, overcorrected version of this section)
+ 
+This project's understanding of the Sona mechanism has been revised twice.
+The first correction (below, kept for history) swung too far. The current,
+literature-confirmed picture (Antishev & Belov 2008; Kannis 2023 thesis;
+**Kannis et al. 2022, "New Application of a Sona Transition Unit," JPS Conf.
+Proc. 37, 021209** — SPIN2021 proceedings, includes explicit apparatus
+description and the Fig. 1 Breit-Rabi arrow diagram this section leans on)
+is a **two-branch mechanism**, not a single dominant channel:
+ 
+### Branch 1 — alpha1 (and beta3): exact, on-axis, zero dynamics required
+alpha1 = |mJ=+1/2, mI=+1/2⟩ is a *stretched* state: it is an **exact
+eigenstate at every value of B**, identical vector from B=+inf through the
+reversal to B=-inf, because no other state shares its mF=+1 quantum number
+to mix with. Nothing needs to happen to it dynamically — it is frozen in the
+fixed (lab) frame, confirmed by `H13=0` identically at any field whenever
+Br=0 (structural fact, matches Kannis 2023 thesis: *"In the ideal case...
+they experience only the Bz component, since Br(r=0)=0"*, and matches our
+own `test_alpha1_and_beta3_frozen_on_axis`).
+ 
+The "alpha1 -> beta3" language in the literature refers to an **apparatus-level
+relabeling**, not a state change: spinfilter II (after the Sona unit) has its
+holding field reversed relative to spinfilter I, so the same frozen lab-frame
+vector that reads as "aligned" (alpha-type) at the entrance reads as
+"anti-aligned" (beta-type) at the exit, purely because the measurement's
+reference field has itself flipped. Kannis 2022 states this operationally:
+*"If the atoms are prepared in the alpha1 state, they should be transferred
+to beta3 due to the inversion of the external field direction."*
+ 
+### Branch 2 — alpha2 (and beta4): a genuine, physical adiabatic flip
+alpha2 and beta4 are the two mF=0 states, coupled to each other by the
+hyperfine constant A. Unlike the stretched pair, they are a real superposition
+of |+1/2,-1/2> and |-1/2,+1/2> at any finite B, and their energy gap
+`E+ - E- = A*sqrt(1+x^2)` has a **minimum of A at B=0** — it never closes.
+By the standard non-crossing (avoided-crossing) theorem, tracking alpha2's
+eigenvector *continuously and adiabatically* from B=+inf down through the
+reversal to B=-inf **forces it onto the mirror-image product state**: it
+starts as |mJ=+1/2, mI=-1/2> and, having never crossed beta4's curve, must
+land on |mJ=-1/2, mI=+1/2> on the far side. **This is a real, physical flip
+of the nuclear spin projection** (mediated by the hyperfine A I.J coupling,
+the same adiabatic-fast-passage mechanism used in NMR/ESR to invert spins by
+sweeping a field through resonance) — not a relabeling. Kannis 2022 Fig. 1's
+own caption confirms this directly: *"The arrows indicate the initial
+|mJ,mI> and the final |m'J,m'I'> substates that the eigenenergies approach"*
+— the alpha2 curve is drawn with an explicit arrow from |1/2,-1/2> to
+|-1/2,1/2>, i.e. the mI flip, while the straight alpha1 line carries no such
+arrow (same label at both ends).
+ 
+**mI is not a well-defined quantum number near B=0** — only F and mF are
+good quantum numbers there (alpha2 at B=0 is the pure hyperfine state F=1,
+mF=0). The "-1/2 -> +1/2" language describes the two high-field (Paschen-Back)
+asymptotes only, connected by a continuous adiabatic path through the
+undefined middle — not an instantaneous jump anywhere.
+ 
+### Why the two branches converge on the same proton polarization
+Upstream of the Sona unit, a Stark-quenching stage removes all beta-population,
+leaving only alpha1 and alpha2, 50/50 (Kannis 2022, step 1) — **zero net
+proton polarization going in** (mI=+1/2 and mI=-1/2 populations are equal
+and uncorrelated), but full electron polarization. Through the Sona region,
+alpha1 ends at mI=+1/2 by *not moving at all* (Branch 1), while alpha2 ends
+at mI=+1/2 by *genuinely, physically flipping* (Branch 2). Two different
+mechanisms, same final absolute nuclear spin projection — this convergence,
+not either branch alone, is the real, non-bookkeeping origin of the 100%
+proton polarization Kannis 2022 reports, and is exactly how a Sona transition
+converts electron polarization into proton polarization.
+ 
+### Where Br fits: loss channel only, not part of either branch
+Br is **not required for either branch above** — both are driven by Bz
+alone. Br's role is exactly what Kannis 2022 (step 3) says: an off-axis
+atom "never sees the external field going to zero, but changing direction by
+180 degrees instead," inducing an "undesirable Larmor precession... and
+subsequent polarization losses." The non-adiabaticity (sudden zero-crossing)
+condition exists **specifically to suppress this Br-driven leakage**, not to
+enable Branch 1 or Branch 2 (both of which happen automatically, on-axis,
+regardless of speed — Branch 1 structurally, Branch 2 because the A-gap
+never closes). Concretely: right at B=0, alpha1, alpha2, and the state about
+to become beta4 are all exactly degenerate (all at A/4 in H0); a nonzero Br
+can freely mix states across zero energy gap, and the "sudden w.r.t. Larmor
+precession around Br" condition (Kannis 2022 Eq. 2; Kannis 2023 thesis) is
+what prevents this near-degenerate mixing from spoiling the clean two-branch
+picture. Kannis 2022's own "alternative explanation" paragraph confirms this
+is a separate, parasitic channel: *"they experience a time-varying radial
+component... [which] induces transitions from beta3 to alpha2 and from
+alpha2 to alpha1"* — i.e. Br causes *unwanted* mixing among all three,
+diluting the clean Branch-1/Branch-2 outcome, not producing it.
+ 
+**Practical consequence for our code:** on-axis, our propagator should show
+(a) alpha1 population exactly frozen (already verified), and (b) alpha2
+population smoothly, adiabatically converting toward beta4 as Bz sweeps
+through the reversal — this is the real physical signal, and it is **already
+implemented and already validated** per `propagator.py`'s own docstring
+(*"alpha2 (index 1) and beta4 (index 3) ARE coupled via Bz alone... this is
+the real on-axis physics: the avoided crossing... slow field reversal drives
+adiabatic following"*, `test_alpha2_beta4_adiabatic_vs_diabatic_trend`).
+Off-axis, the analysis needs to track **Br-driven leakage among alpha1,
+alpha2, and beta4 as the loss channel**, separately from the two on-axis
+branches above — not as "the signal," which was the error in the previous
+version of this section.
+ 
+---
+ 
+## 5a. Reference frame convention: fixed vs. rotating
+ 
+Our code uses the **fixed (lab) frame**: the basis {alpha1,alpha2,beta3,beta4}
+is nailed to the lab z-axis at all times (defined at B=0 and never rotated);
+everything the field does is packed into the time-dependent V(r,t) in
+`hamiltonian.py`. This matches Antishev & Belov's Fig. 3 convention
+("transformations (3) were not used"), not their Fig. 4 convention (rotated
+frame, z' along the local total field vector).
+ 
+- **Fixed frame, on-axis:** alpha1/beta3 are exact eigenstates (frozen,
+  Section 5 Branch 1); alpha2/beta4 undergo the real adiabatic flip
+  (Section 5 Branch 2). Both are genuine, frame-independent physical
+  statements already present in the fixed-frame output — no rotation needed
+  to see either.
+- **Rotating frame:** would relabel alpha1 as converting to beta3 on-axis
+  purely because the field-following axis itself flips 180 degrees at Bz=0 —
+  a bookkeeping restatement of Branch 1's "no change in the lab frame,"
+  not a distinct physical effect. Useful only for comparing directly against
+  Antishev's Fig. 4-style plots; requires an explicit post-propagation
+  rotation (his Eq. 3/4), not a change to the propagator itself.
+- **Off-axis, Br-driven terms** are real in either frame (frame-independent)
+  and constitute the loss channel described in Section 5 — not a second
+  "signal" channel.
+---
+ 
+## 6. Immediate next steps (in rough priority order)
+ 
+1. **Verify both on-axis branches explicitly** (see Section 5) — confirm
+   alpha1 population stays exactly at 1.0 (Branch 1, already tested) AND
+   separately confirm alpha2 -> beta4 tracks the adiabatic Breit-Rabi curve
+   (Branch 2, already tested per `test_alpha2_beta4_adiabatic_vs_diabatic_trend`)
+   for our synthetic field. Then compute `omega_L` and crossing time vs
+   radius to check the Br-driven leakage trend (loss channel) separately.
+2. **Rework diagnostics** to report **three** quantities, not two: alpha1
+   fidelity (Branch 1, should stay ~1 on-axis), alpha2->beta4 adiabatic
+   fidelity (Branch 2, should track the Landau-Zener/adiabaticity parameter
+   for the A-gap), and Br-driven leakage among alpha1/alpha2/beta4 (loss,
+   should grow with radius and with suddenness of the Br pulse).
+3. **Build `sweep.py`**: loop over Sona-coil current (rescaling field
+   amplitude) or field geometry, call beam-averaged propagation at each
+   setting, assemble curves — targeting the combination of clean Branch-1 +
+   Branch-2 outcome (net proton polarization) vs radius and vs the
+   suddenness-w.r.t.-Br parameter, not a single "alpha1->beta3 transfer
+   efficiency" number.
+4. **Beam energy spread**: currently every particle uses exactly 3 keV; add
+   as a further weighted average (same pattern as `beam.py`'s radial average)
+   over a velocity/energy distribution.
+5. **Real field data**: replace synthetic two-coil field with an OPERA2D
+   export (same CSV interface, `csv_field.py` already handles it) — first the
+   simplified two-solenoid geometry, then full OPPIS.
+6. **Deuterium extension** (I=1, 6-state, Kannis Eq. 6.25) — currently raises
+   `NotImplementedError` everywhere.
+7. **Performance**: propagator already vectorized once (~6x speedup, batched
+   Hamiltonian construction). Next natural target if needed: parallelize
+   across the (radius x current) grid in `sweep.py` — every trajectory is
+   independent.
+---
+ 
+## 7. Deliverables already produced (for reference, not re-needed as code)
+ 
+- A LaTeX progress report (physics-focused, for non-Python colleagues) with
+  full source code appendix — compiled PDF + editable .tex source were
+  generated and shared in this chat. Not part of the repo; regenerate from
+  scratch if needed (the LaTeX source pulled code directly from `src/sona/`
+  via file copies, so it can be easily rebuilt from the current repo state).
+- Various diagnostic figures (Breit-Rabi diagrams at multiple radii, off-axis
+  trajectory plots, beam-averaging trend, field-shape plots) — all
+  regeneratable via `scripts/inspect_offaxis.py` or ad hoc scripts using the
+  functions in Section 3.
+---
+ 
+## 8. Things to NOT re-derive from scratch (save time in the new chat)
+ 
+- The full symbolic H0+V matrix (LaTeX form) was derived from first
+  principles (spin ladder operators) and cross-validated against Kannis
+  Eq. 6.23/6.24 term-by-term — it's correct, it's in `hamiltonian.py`'s
+  docstring, don't re-derive.
+- The Schrodinger- vs interaction-picture equivalence for populations
+  (`|a_k|^2 = |c_k|^2` always) was worked through carefully — Schrodinger
+  picture is what's implemented, deliberately, for numerical simplicity.
+- Step-size convergence is checked and solid (Section 4) — no need to
+  re-litigate whether `oversample=30` is enough.
+
+---
+
+## 9. Cross-check against the Mathematica notebook `metastable_H_time.nb` (2026-09-29)
+
+The notebook integrates the **interaction-picture** ODE (thesis Eq. 6.15/6.16,
+NDSolve, AccuracyGoal 10) for metastable H: 1 keV, lambda = 20 cm,
+`Bz = -Bmax sin(2 pi t/T)`, `Br = -(r/2) dBz/dz` (with z = v t), Bmax = 10 mT,
+r = 1 cm, phi = 0, one full period, initial state pure beta4, basis order
+(++,+-,-+,--), eigenvalues/eigenvectors hard-coded.
+
+**Result: same Hamiltonian, same physics.**
+- Independent spin-operator build `H = A I.J - (gJ muB J + gI muN I).B` vs the
+  repo's `H0 + V`: max difference ~1e-16 of hA, for several (Bz, Br, phi).
+- Repo `propagate()` (matrix-exponential) and `propagate_solve_ivp_reference()`
+  both reproduce an independent DOP853 replica of the notebook to ~1e-5
+  (final populations, order alpha1, alpha2, beta3, beta4; A = 177.556 MHz):
+
+  | start | alpha1 | alpha2 | beta3 | beta4 |
+  |-------|--------|--------|-------|-------|
+  | beta4 | 0.0006 | 0.0018 | 0.0045 | 0.9931 |
+  | alpha1| 0.1360 | 0.7105 | 0.1490 | 0.0045 |
+  | alpha2| 0.2517 | 0.0360 | 0.7105 | 0.0018 |
+  | beta3 | 0.6117 | 0.2517 | 0.1360 | 0.0006 |
+
+- beta4 survival vs radius (A = 177.5568343 MHz): r=0: 0.9999; 2.5 mm: 0.9970;
+  5 mm: 0.9938; 1 cm: 0.9931; 2 cm: 0.9689. Norm conserved to ~1e-9.
+- These numbers are a ready-made **regression test** (add to `tests/`).
+
+**Convention differences (none change the physics):**
+| item | notebook | repo | effect |
+|------|----------|------|--------|
+| A(2S)/h | 177.5568343 MHz | 177.556 MHz (`constants.py`) | ~1e-4 in populations; `.tex` table quotes 177.556860(4) MHz (Kolachevsky 2009) -> **OPEN: pick one value, use everywhere** |
+| mass in v | H atom (1.007825 u) | `M_PROTON` | repo v is 0.027% higher; H atom mass is the physical one -> add `mass` argument / default |
+| picture | interaction (Exp[-i w t] phases) | Schrodinger | identical populations |
+| eigensystem | hard-coded numbers | built from A | repo is general |
+| field | analytic sine | CSV + PCHIP (Br = -(r/2) dBz/dz) | none for smooth fields |
+| initial state | pure beta4 | any | repo more general |
+| B_c | - | `B_critical_T` = 6.326 mT (A/(|gJ|muB+gI muN)) | note says 6.34 mT (test tolerance 2%); 6.34 is what you get neglecting the nuclear term (6.336) |
+
+## 10. Documentation problems found in the GitHub README (fix next commit)
+- "B_c (63 mT metastable)" is a units slip: B_c = 6.34 mT (= 63.4 G). The claim
+  that the synthetic coil's ~48 G peak is below B_c (so the on-axis crossing is
+  deeply adiabatic) is still true (48 G < 63.4 G) but should be restated in
+  consistent units.
+- "3 keV OPPI proton" while the README also targets ground-state 1S at RHIC:
+  state explicitly which energy/atom each statement refers to.
+- README status text predates the corrected two-branch physics (Section 5).
+- Add `metastable_H_time.nb` to the repo (e.g. `validation/`) and a
+  `docs/PHYSICS_AND_CONVENTIONS.md` covering: basis order, fixed frame,
+  two-branch picture, Br sign, choice of A and mass, mapping to thesis
+  equations.
+
+## 11. Updated next steps (supersedes Section 6 ordering where they conflict)
+1. Push the local code (batched Hamiltonian, vectorized propagator, `beam.py`,
+   `test_beam.py`) to GitHub so repo == this document.
+2. Decide A(2S) and mass convention; add the notebook regression test.
+3. Fix README (Section 10). 4. Then Section 6 items 1-7 (sweep.py first).

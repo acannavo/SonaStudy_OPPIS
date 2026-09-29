@@ -1,0 +1,970 @@
+\documentclass[11pt,a4paper]{article}
+
+% ---------------------------------------------------------------------------
+% Packages
+% ---------------------------------------------------------------------------
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Termes}
+\newfontfamily\greekfont{DejaVu Serif}
+\usepackage[margin=2.5cm,headheight=14pt]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{physics}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{pifont}
+
+% Monospace font with full Unicode/Greek coverage, for the code listing
+\newfontfamily\ttunicode{DejaVu Sans Mono}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{Sona transition population-propagation code -- progress note}
+\fancyhead[R]{\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+% ---------------------------------------------------------------------------
+% Code listing style (Python)
+% ---------------------------------------------------------------------------
+\definecolor{codebg}{rgb}{0.96,0.96,0.96}
+\definecolor{codegreen}{rgb}{0.0,0.45,0.0}
+\definecolor{codegray}{rgb}{0.45,0.45,0.45}
+\definecolor{codeblue}{rgb}{0.0,0.0,0.6}
+
+\lstdefinestyle{pystyle}{
+    backgroundcolor=\color{codebg},
+    commentstyle=\color{codegreen}\itshape,
+    keywordstyle=\color{codeblue}\bfseries,
+    stringstyle=\color{codegray},
+    basicstyle=\ttunicode\scriptsize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numberstyle=\tiny\color{codegray},
+    numbersep=6pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=4,
+    frame=single,
+    rulecolor=\color{black!20},
+    language=Python
+}
+\lstset{style=pystyle}
+
+% ---------------------------------------------------------------------------
+\title{\textbf{Numerical propagation of hyperfine-state populations through a\\
+Sona transition unit: status of the simulation code}}
+\author{Sona transition simulation project \\ \small based on the theoretical framework of Chapters 3 and 6, Kannis (2023)}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This note summarizes the current status of the Python code being developed to
+propagate the hyperfine-substate population of H/D atoms through a Sona
+transition unit, using magnetic field maps of the RHIC OPPIS as measured or
+simulated input. The formalism and code apply identically to \textbf{both}
+the ground ($1S_{1/2}$) state -- the atoms Sona transitions actually act on
+in RHIC OPPIS operation -- and the metastable ($2S_{1/2}$) state used in the
+Lamb-shift-polarimeter bench measurements (Sec.~\ref{sec:status}) that the
+code is validated against; the two cases differ only in the numerical value
+of the hyperfine constant $A$ (Table~\ref{tab:groundvsmeta}). The full quantum-mechanical target model is the
+time-dependent perturbation theory formalism of Ch.~6 of the Kannis (2023)
+thesis \cite{kannis2023}. \textbf{Update since the previous version of this
+note:} the coupled-state population propagation itself -- construction and
+diagonalization of $H_0+V(r,t)$, Eq.~\eqref{eq:fullH}, and numerical
+integration of Eq.~\eqref{eq:fode} for a single atom and for a
+Gaussian-averaged beam -- is now implemented and validated (Sec.~\ref{sec:status}),
+alongside the field-map processing and kinematic estimates that were already
+in place. The zero-crossing/non-adiabaticity condition (Sec.~2.2) and the
+identification of the two on-axis mechanisms (Branches 1 and 2,
+Sec.~\ref{sec:frame}) that combine to produce full electron-to-nuclear
+polarization transfer have also been sharpened, using additional literature
+(Antishev \& Belov 2008 \cite{antishev2008}) and a first-principles
+conservation-law argument, since the previous version. The current-sweep
+(polarization vs.\ Sona-coil current) validation against the thesis's
+published curves is the next and last step before the PSTP contribution.
+This document is intended as a progress update for the group ahead of the
+contribution to PSTP (Mito, Japan).
+\end{abstract}
+
+\tableofcontents
+
+% =============================================================================
+\section{Context and goal}
+% =============================================================================
+
+The Sona transition unit reverses the sign of the longitudinal magnetic field
+$B_z$ along the beam axis, driving an H (or D) atom prepared in one hyperfine
+substate through the zero-field region. If the field reversal is ``sudden''
+compared to the Larmor precession, the atom cannot follow the Breit--Rabi
+energy levels adiabatically, and its wavefunction ends up as a coherent
+superposition of the substates it started in and the ones it is transferred
+to on the other side of the crossing -- this is the mechanism Sona
+originally exploited to enhance nuclear polarization. Chapters 3, 5, and 6
+of \cite{kannis2023} show, however, that even when Sona's non-adiabaticity
+condition is satisfied, the measured polarization downstream of the unit
+oscillates with the current in the Sona coils -- a genuinely quantum
+mechanical effect (coupling between hyperfine substates near the crossing)
+that a purely semiclassical treatment cannot reproduce.
+
+\paragraph{Ground vs.\ metastable state -- why both appear in this note.}
+In an OPPIS-type source the Sona unit acts on atoms in the \emph{ground}
+state ($1S_{1/2}$), since that is the atom's state at the point it is
+re-ionized to form the polarized H$^-$ (or D$^-$) beam. The bench
+measurements used in this project to validate the code, however -- the
+Lamb-shift-polarimeter data of \cite{kannis2022spin} and \cite{kannis2023}
+Ch.~5 -- are taken on the \emph{metastable} state ($2S_{1/2}$), which is
+the experimentally convenient choice for a test bench (it can be
+selectively quenched and detected via Lyman-$\alpha$ emission; see
+Sec.~\ref{sec:groundvsmeta}). The Hamiltonian, the FODE system
+Eq.~\eqref{eq:fode}, and the explicit matrix of Sec.~\ref{sec:matrix} are
+\emph{identical in form} for both cases -- only the hyperfine constant $A$
+(and the derived critical field $B_c$) differ numerically
+(Table~\ref{tab:groundvsmeta}). The code is therefore written, and should
+be read throughout, as applying to either state via a single parameter
+choice, not as two separate code paths.
+
+The long-term goal of this project is a Python tool that:
+\begin{enumerate}
+    \item imports a magnetic field map of the Sona region -- either from
+    a simulation (e.g.\ finite-element solenoid model) or from a
+    measurement (LCCS/NewScanApp bench scans of the OPPIS Sona coils);
+    \item builds the corresponding $B_z(z)$ and $B_r(z,r)$ profiles seen
+    by an atom travelling through the unit;
+    \item propagates the hyperfine-substate population amplitudes through
+    that field, following the time-dependent perturbation theory
+    formalism derived in Ch.~6 of \cite{kannis2023};
+    \item compares the resulting polarization vs.\ Sona-coil-current curve
+    with the measured polarization scans, in place of (or as a
+    generalization of) the Mathematica code used in the thesis.
+\end{enumerate}
+
+This tool would let us test new Sona coil geometries and operating points
+\emph{before} committing beam time to them, and is the basis of the
+contribution planned for the PSTP conference in Mito.
+
+% =============================================================================
+\section{Theoretical framework (Ch.~3 and Ch.~6 of the thesis)}
+% =============================================================================
+
+This section recalls -- for reference, without re-deriving -- the pieces of
+the theory that the code needs to implement or already uses. Full
+derivations are in \cite{kannis2023}.
+
+\subsection{Hyperfine structure in a static field}
+\label{sec:groundvsmeta}
+
+An H or D atom, in either its ground ($1S_{1/2}$) or metastable
+($2S_{1/2}$) state, in a field $\vb{B}=B\hat{z}$ is described by the same
+Breit--Rabi Hamiltonian,
+\begin{equation}
+    H = A\, \vb{I}\cdot\vb{J} - \left(g_J \mu_B J_z + g_I \mu_N I_z\right) B ,
+    \label{eq:hamiltonian}
+\end{equation}
+where $\vb{I}$ and $\vb{J}$ are the nuclear and electronic angular momenta,
+$\mu_B,\mu_N$ are the Bohr and nuclear magnetons, and $g_J\approx2.0023$,
+$g_I$ are the electronic and nuclear $g$-factors (common to both $S$-states
+to the precision needed here). The two states differ only through the
+hyperfine constant $A$, which is set by the electron probability density at
+the nucleus, $A\propto|\psi(0)|^2$; since $|\psi_{2S}(0)|^2 =
+\tfrac18|\psi_{1S}(0)|^2$, the metastable-state constant is (almost exactly)
+one eighth of the ground-state one:
+\begin{center}
+\begin{tabular}{@{}lccl@{}}
+\toprule
+State & $A_{\mathrm H}/h$ & $B_c$ & Source \\
+\midrule
+Ground, $1S_{1/2}$ (RHIC OPPIS operating state)
+    & \SI{1420.405752}{MHz} & \SI{50.7}{mT} & 21\,cm line (exact) \\
+Metastable, $2S_{1/2}$ (Lamb-shift-polarimeter bench state)
+    & \SI{177.556860(4)}{MHz} & \SI{6.34}{mT} & \cite{kolachevsky2009} \\
+\bottomrule
+\end{tabular}
+\label{tab:groundvsmeta}
+\end{center}
+\emph{Note on the value of $A$ in the code.} \texttt{constants.py} currently
+uses $A_{2S}/h=\SI{177.556}{MHz}$, the Mathematica reference implementation
+(Sec.~\ref{sec:nbcheck}) uses \SI{177.5568343}{MHz}, and the table above quotes
+\SI{177.556860}{MHz}; the differences change the final populations by
+$\sim10^{-4}$ only, but a single value should be adopted everywhere before
+publication. With the constants of \texttt{constants.py} the definition
+$B_c=A/(|g_J|\mu_B+g_I\mu_N)$ evaluates to \SI{6.326}{mT} (2S) and
+\SI{50.61}{mT} (1S); the quoted \SI{6.34}{mT} and \SI{50.7}{mT} correspond to
+neglecting the nuclear term ($A/|g_J|\mu_B$ gives \SI{6.336}{mT} and \SI{50.68}{mT}).
+(Deuterium values used elsewhere in this note, $B_c=\SI{1.46}{mT}$, refer to
+the metastable $2S_{1/2}$ state, matching the bench measurements of
+Sec.~\ref{sec:status}; the ground-state D critical field scales the same
+way, by the corresponding $A_{2S}/A_{1S}$ ratio.) Diagonalizing
+Eq.~\eqref{eq:hamiltonian} gives the Breit--Rabi energy levels ($\alpha_i$,
+$\beta_i$ substates) as a function of $B$, which cross smoothly into the
+high-field $\ket{m_J,m_I}$ states and connect, at $B=0$, to the total-$F$
+hyperfine states, for either choice of $A$. The high-field/low-field
+crossover happens at the corresponding $B_c$ in each case; everywhere else
+in this note, ``high field'' and ``low field'' should be read relative to
+whichever $B_c$ applies to the state actually being propagated.
+
+\paragraph{One place the two states genuinely differ: state preparation.}
+Upstream of the Sona unit, the atomic beam must first be prepared purely in
+the $\alpha$ substates (the spinfilter-transmitted states), with the
+unwanted $\beta$ population removed. For the \emph{metastable} state this is
+done via a Stark-induced level crossing: at a suitable field the $\beta$
+sublevels of $2S_{1/2}$ cross the (short-lived) $2P_{1/2}$ sublevels, so an
+applied electric field quenches them to the ground state via Lyman-$\alpha$
+decay, leaving only $\alpha$ population -- this is the mechanism described
+in \cite{kannis2022spin} step (1) and is specific to the metastable state
+(there is no analogous nearby $P$-state for $1S_{1/2}$ to Stark-quench
+into). \emph{Ground-state} OPPIS sources instead rely on a Stern-Gerlach-type
+sextupole magnet upstream of the Sona unit to spatially separate/select the
+$\alpha$ states by their magnetic moment. This preparation-stage difference
+does not affect the Hamiltonian, Eq.~\eqref{eq:hamiltonian}, or the
+propagation matrix of Sec.~\ref{sec:matrix} -- it only sets the initial
+condition $c_k(t{=}0)$ that Eq.~\eqref{eq:fode} is integrated from, which in
+both cases is the same 50/50 $\alpha_1,\alpha_2$ mixture.
+
+\subsection{Zero-crossing (non-adiabaticity) condition}
+
+Because of $\nabla\cdot\vb{B}=0$, a longitudinal field reversal is
+necessarily accompanied by a radial component
+\begin{equation}
+    B_r(z,r) = -\frac{1}{2}\frac{dB_z}{dz}\, r ,
+    \label{eq:br}
+\end{equation}
+so an off-axis atom never actually sees $B=0$: instead it sees the field
+direction flip by $180^\circ$ over a finite time. For the polarization not to
+be scrambled by the resulting Larmor precession, this flip must be
+``sudden'', i.e.\ faster than the Larmor period. This translates into
+Sona's zero-crossing double inequality (thesis Eq.~3.37),
+\begin{equation}
+    \frac{e B_t^2}{2 m_e v} \;\ll\; \left|\frac{dB_z}{dz}\right| \;\ll\;
+    \frac{8 m_e v}{e r^2} \qquad \text{(H)}, \qquad
+    \frac{e B_t^2}{3 m_e v} \;\ll\; \left|\frac{dB_z}{dz}\right| \;\ll\;
+    \frac{12 m_e v}{e r^2} \qquad \text{(D)},
+    \label{eq:zerocrossing}
+\end{equation}
+with $v$ the atom velocity, $r$ the beam radius, and $B_t$ a residual
+transverse stray field. The upper bound in Eq.~\eqref{eq:zerocrossing} is
+already implemented in the code (Sec.~\ref{sec:status}) as an adiabaticity
+threshold to be checked against the measured field gradient at the
+crossing.
+
+\subsection{Target dynamical model: time-dependent perturbation theory}
+
+Sona's inequalities only guarantee that the transition is non-adiabatic; they
+do not predict \emph{how} the population redistributes among substates near
+the crossing, which is the effect responsible for the polarization
+oscillations observed experimentally. Chapter 6 of \cite{kannis2023}
+addresses this with a fully quantum treatment: in the rest frame of the atom
+(i.e.\ using $t = z/v$), the Hamiltonian is split into a static hyperfine
+part $H_0$ and a time-dependent Zeeman perturbation $V(r,t)$ built from the
+measured/simulated $B_z(t)$ and $B_r(r,t)$,
+\begin{equation}
+    H(r,t) = H_0 + V(r,t), \qquad
+    H_0 = A\,\vb{I}\cdot\vb{J}, \qquad
+    V(r,t) = -\left(g_J\mu_B \vb{J} + g_I\mu_N \vb{I}\right)\cdot\vb{B}(r,t).
+    \label{eq:fullH}
+\end{equation}
+Expanding the wavefunction on the eigenbasis $\ket{j}$ of $H_0$,
+$\ket{\psi(r,t)} = \sum_j c_j(r,t)\, e^{-iE_j t/\hbar}\ket{j}$, and inserting
+into the Schr\"odinger equation gives a closed system of coupled first-order
+differential equations (FODEs) for the amplitudes,
+\begin{equation}
+    i\hbar\, \dot{c}_k(r,t) = \sum_{j} c_j(r,t)\, e^{i\omega_{kj}t}\,
+    \mel{k}{V(r,t)}{j}, \qquad \omega_{kj} = \frac{E_k-E_j}{\hbar},
+    \label{eq:fode}
+\end{equation}
+with $k,j$ running over the $(2J{+}1)(2I{+}1)$ hyperfine substates (4 for H,
+6 for D). The measurable quantities are the populations $|c_k(r,t)|^2$,
+integrated over the beam's radial and velocity distribution.
+
+\paragraph{The eigenbasis $\ket{j}$, made explicit.} For hydrogen, $\ket{j}$
+is exactly $\ket{1}{=}\ket{\alpha_1}$, $\ket{2}{=}\ket{\alpha_2}$,
+$\ket{3}{=}\ket{\beta_3}$, $\ket{4}{=}\ket{\beta_4}$ -- not a separate
+abstract object, but literally the same four states of
+Sec.~\ref{sec:groundvsmeta}, since $H_0=A\,\vb{I}\cdot\vb{J}$ commutes with
+$F^2,F_z$ and its eigenstates are exactly the coupled $\ket{F,m_F}$
+combinations:
+\begin{equation}
+    H_0\ket{1} = \frac{A}{4}\ket{1}, \quad
+    H_0\ket{2} = \frac{A}{4}\ket{2}, \quad
+    H_0\ket{3} = \frac{A}{4}\ket{3}, \quad
+    H_0\ket{4} = -\frac{3A}{4}\ket{4}.
+\end{equation}
+This is why the basis is called \emph{coupled}: it is the basis in which
+$H_0$ -- and only $H_0$ -- is diagonal, in contrast to the
+\emph{uncoupled} product basis $\ket{m_J,m_I}$, in which $H_0$ has the
+off-diagonal $A/2$ flip-flop entry seen in Eq.~\eqref{eq:matrix}
+(Sec.~\ref{sec:matrix}'s basis-convention note). The implemented code
+(Sec.~\ref{sec:quantum-implementation}) works in the coupled basis
+throughout, precisely so that $H_0$ needs to be diagonalized once
+(on paper, above) rather than re-diagonalized at every propagation step --
+each step then only has to build the much smaller $V(B_z,B_r,\phi)$ and add
+it to the already-known diagonal $H_0$.
+
+In the thesis this system is solved numerically in Mathematica (method of lines) for each
+value of the Sona coil current, and the resulting simulated polarization is
+compared to the Lamb-shift-polarimeter measurements. \textbf{This is the
+model our own code is meant to reproduce and eventually extend}, using
+directly the OPPIS field maps rather than an idealized/simulated field
+shape, and Python/SciPy instead of Mathematica.
+
+\subsection{Explicit matrix form and physical reading of its elements}
+\label{sec:matrix}
+
+For hydrogen ($I=J=1/2$) it is worth writing Eq.~\eqref{eq:fullH} out
+explicitly, since the pattern of which matrix elements are zero and which
+are not \emph{is} the physical content of the Sona mechanism. Using the
+uncoupled product basis $\{\ket{1},\ket{2},\ket{3},\ket{4}\} =
+\{\ket{{+}{+}},\ket{{+}{-}},\ket{{-}{-}},\ket{{-}{+}}\}$ (shorthand for
+$\ket{m_J,m_I}$, i.e.\ $\ket{1}=\alpha_1$, $\ket{3}=\beta_3$ are the
+``stretched'' states and $\ket{2},\ket{4}$ are the high-field asymptotes of
+$\alpha_2,\beta_4$), direct evaluation of
+$\vb{I}\cdot\vb{J}=I_zJ_z+\tfrac12(I_+J_-+I_-J_+)$ and of $\vb{J}\cdot\vb{B}$,
+$\vb{I}\cdot\vb{B}$ gives
+\begin{equation}
+    H(r,t) =
+    \begin{pmatrix}
+        \tfrac{A}{4} - \tfrac12(g_J\mu_B+g_I\mu_N)B_z
+        & -\tfrac12 g_I\mu_N B_r
+        & 0
+        & -\tfrac12 g_J\mu_B B_r \\[4pt]
+        -\tfrac12 g_I\mu_N B_r
+        & -\tfrac{A}{4} - \tfrac12(g_J\mu_B-g_I\mu_N)B_z
+        & -\tfrac12 g_J\mu_B B_r
+        & \tfrac{A}{2} \\[4pt]
+        0
+        & -\tfrac12 g_J\mu_B B_r
+        & \tfrac{A}{4} + \tfrac12(g_J\mu_B+g_I\mu_N)B_z
+        & -\tfrac12 g_I\mu_N B_r \\[4pt]
+        -\tfrac12 g_J\mu_B B_r
+        & \tfrac{A}{2}
+        & -\tfrac12 g_I\mu_N B_r
+        & -\tfrac{A}{4} + \tfrac12(g_J\mu_B-g_I\mu_N)B_z
+    \end{pmatrix},
+    \label{eq:matrix}
+\end{equation}
+in the basis order $(\alpha_1,\alpha_2,\beta_3,\beta_4)$. Every entry has a
+distinct physical role:
+
+\begin{itemize}
+    \item \textbf{Diagonal entries ($H_{11},H_{22},H_{33},H_{44}$).} These
+    are the Breit--Rabi energies: the $\pm A/4$ pieces are the zero-field
+    hyperfine splitting, and the $B_z$-dependent pieces are the ordinary
+    Zeeman shift. A purely diagonal Hamiltonian \emph{cannot cause any
+    transition} -- it only advances each amplitude's phase,
+    $c_k(t)\to c_k(0)\,e^{-i\int E_k\,dt/\hbar}$, leaving every population
+    $|c_k|^2$ unchanged. Reversing $B_z$, however fast, never by itself
+    moves population between substates: this is the direct matrix-level
+    statement of why the field reversal alone cannot drive any transition
+    (Sec.~\ref{sec:frame} clarifies what it \emph{does} do).
+
+    \item \textbf{The $H_{24}=H_{42}=A/2$ entry (constant, $B$-independent).}
+    This is the hyperfine ``flip-flop'' term $\tfrac12(I_+J_-+I_-J_+)$,
+    present already at $B=0$: it is exactly what makes $\alpha_2$ and
+    $\beta_4$ genuine superpositions rather than pure product states at low
+    field, and it is the coupling responsible for the \emph{real, physical}
+    adiabatic transfer of population between them as $B_z$ sweeps through
+    the reversal (the mechanism referred to as ``Branch 2'' below). Because
+    this term never vanishes, the $\alpha_2$--$\beta_4$ energy gap
+    $E_2-E_4=\sqrt{A^2+\left[(g_J\mu_B-g_I\mu_N)B_z\right]^2}$ never closes
+    (its minimum, at $B_z=0$, is exactly $A$), so this pair can be followed
+    adiabatically for essentially any realistic field-sweep rate.
+    \textbf{This ``constant $A/2$'' description is specific to the
+    uncoupled basis of Eq.~\eqref{eq:matrix}.} In the coupled basis used by
+    the implemented code (Eq.~\eqref{eq:fode-explicit}, $H_{24}=\frac{B_z}{2}(\alpha-\beta)$,
+    which vanishes at $B_z=0$), the same $A$-sized gap at $B_z=0$ instead
+    comes entirely from the \emph{diagonal} splitting ($H_{22}-H_{44}=A/4-(-3A/4)=A$
+    there, with zero off-diagonal contribution) -- the two bases partition
+    the identical physical gap differently between diagonal and
+    off-diagonal entries, exactly as the basis-convention note above
+    anticipates. The conclusion (a robust, never-closing $A$-sized gap
+    driving Branch 2) is basis-independent; the specific matrix entry
+    responsible for it is not.
+
+    \item \textbf{The $B_r$-proportional off-diagonal entries
+    ($H_{12},H_{14},H_{23},H_{34}$).} These exist only off-axis
+    ($B_r=0$ exactly on the beam axis by symmetry, Eq.~\eqref{eq:br}), and
+    they are what Eq.~\eqref{eq:fode} actually integrates against as the
+    time-dependent perturbation once $r\neq0$. Two distinct ladder
+    operators contribute: the $g_J\mu_B B_r$ terms (from $J_x$) connect
+    states that differ by $\Delta m_J=\pm1$ at fixed $m_I$ -- i.e.\
+    $\alpha_1\!\leftrightarrow\!\beta_4$ and $\alpha_2\!\leftrightarrow\!\beta_3$
+    -- while the much smaller $g_I\mu_N B_r$ terms (from $I_x$, suppressed
+    by $\mu_N/\mu_B\sim1/1836$) connect states differing by
+    $\Delta m_I=\pm1$ at fixed $m_J$, i.e.\
+    $\alpha_1\!\leftrightarrow\!\alpha_2$ and $\beta_3\!\leftrightarrow\!\beta_4$.
+    Both channels are pure \emph{loss}: any population an atom sheds into
+    them, off-axis, is population that fails to land cleanly on the
+    intended final substate, exactly the ``undesirable Larmor precession...
+    and subsequent polarization losses'' described for the off-axis case in
+    \cite{kannis2022spin}. The zero-crossing condition,
+    Eq.~\eqref{eq:zerocrossing}, exists specifically to keep these
+    $B_r$-driven entries too short-lived (traversed too suddenly relative to
+    the Larmor precession they induce) to build up significant leakage.
+
+    \item \textbf{The $H_{13}=H_{31}=0$ entry (identically zero, on- or
+    off-axis).} No linear combination of $J_z,J_x,I_z,I_x$ (nor the
+    zero-field flip-flop term) connects $\ket{\alpha_1}=\ket{{+}{+}}$
+    directly to $\ket{\beta_3}=\ket{{-}{-}}$, since doing so would require
+    simultaneously raising/lowering \emph{both} $m_J$ and $m_I$ by one unit
+    in a single step -- a second-order process entirely absent from
+    Eq.~\eqref{eq:matrix}. \textbf{$\alpha_1$ and $\beta_3$ never couple to
+    each other directly, at any radius, at any field profile.} What the
+    literature calls the ``$\alpha_1\to\beta_3$ transition'' is therefore
+    not a matrix element at all: it is the statement that $\ket{\alpha_1}$
+    is an \emph{exact} eigenvector of Eq.~\eqref{eq:matrix} for any $B_z(t)$
+    on-axis (first row/column of the matrix reduces to a single diagonal
+    entry when $B_r=0$), so the amplitude simply sits still while the
+    diagonal energy $H_{11}$ sweeps past $H_{33}$ during the reversal --
+    and is subsequently \emph{read out} as ``$\beta_3$'' because the
+    downstream spinfilter's holding field has itself reversed, not because
+    any amplitude moved (Sec.~\ref{sec:frame}).
+\end{itemize}
+
+\paragraph{A note on basis convention.} Eq.~\eqref{eq:matrix} is written in
+the \emph{uncoupled} product basis $\{\ket{{+}{+}},\ket{{+}{-}},\ket{{-}{-}},\ket{{-}{+}}\}$
+with the labels $\alpha_1,\alpha_2,\beta_3,\beta_4$ applied loosely to its
+members (as the text above already notes, $\ket{2},\ket{4}$ are only the
+\emph{high-field asymptotes} of $\alpha_2,\beta_4$, not the field-independent
+$B{=}0$ eigenstates of Table 6.1 in \cite{kannis2023}). The implemented code
+(Sec.~\ref{sec:status}) instead diagonalizes $H_0$ \emph{first} and works in
+its exact eigenbasis, so that $\alpha_2,\beta_4$ are the fixed, field-independent
+combinations $(\ket{{+}{-}}\pm\ket{{-}{+}})/\sqrt2$ at every field, not just
+asymptotically. The two matrices are unitarily equivalent -- rotating
+Eq.~\eqref{eq:matrix} by the fixed $2\times2$ rotation in the $\{2,4\}$
+subspace reproduces the code's matrix exactly, verified numerically to
+machine precision -- and $\alpha_1,\beta_3$ are identical, unambiguous
+objects in both conventions (that is exactly why they are called
+``stretched'' states). This is a bookkeeping difference, not a physics
+disagreement; it is noted here only because the two matrices look
+superficially different (the constant $A/2$ entry above versus a purely
+$B_z$-dependent diagonal splitting in the code's convention) and a reader
+comparing them directly should not mistake that for an inconsistency.
+
+Eq.~\eqref{eq:matrix} is written with $A$ left symbolic precisely because it
+applies unchanged to both cases of Table~\ref{tab:groundvsmeta}: substituting
+$A=A_{1S}$ gives the matrix relevant to actual OPPIS operation, while
+$A=A_{2S}$ gives the one that should reproduce the Lamb-shift-polarimeter
+bench data of Sec.~\ref{sec:status}. The only numbers that change between
+the two cases are $A$ itself (and, through it, $B_c$ and the diagonal
+splittings); the qualitative structure -- which entries are diagonal, which
+are the constant $A/2$ flip-flop term, which are $B_r$-proportional, and
+which are identically zero -- is exactly the same for ground and metastable
+atoms alike.
+
+In short: Eq.~\eqref{eq:matrix} contains exactly two physically distinct
+mechanisms and one purely parasitic one. The $A/2$ entry drives a genuine,
+on-axis, $B_z$-only adiabatic population transfer between $\alpha_2$ and
+$\beta_4$ (``Branch 2''); the identically-zero $H_{13}$ entry, combined with
+the diagonal-only on-axis Hamiltonian, is what makes $\alpha_1$ (``Branch
+1'') simply sit frozen while the reversal happens around it; and the four
+$B_r$-proportional entries, which exist only off-axis, are the sole source
+of polarization loss, to be suppressed by satisfying
+Eq.~\eqref{eq:zerocrossing}.
+
+\subsection{Fixed vs.\ rotating quantization axis, and the two branches of the mechanism}
+\label{sec:frame}
+
+Eq.~\eqref{eq:matrix} is written in a basis whose quantization axis is fixed
+to the lab $z$-axis at all times; this is the natural choice for a
+code that just integrates Eq.~\eqref{eq:fode} directly, and it is what our
+implementation uses throughout. An alternative, equivalent bookkeeping
+rotates the quantization axis to always point along the \emph{local} total
+field direction (used, e.g., in Fig.~4 of Antishev \& Belov
+\cite{antishev2008}, as opposed to their Fig.~3, which -- like our code --
+does not perform this rotation).
+
+\paragraph{A conservation law, not just a matrix element.} On axis
+($B_r=0$), the total angular-momentum projection $m_F=m_J+m_I$ is an
+\emph{exactly} conserved quantum number: $B_z$ couples only to $J_z$ and
+$I_z$ individually, and the zero-field flip-flop term conserves
+$m_J+m_I$ by construction, so $[H,\,J_z+I_z]=0$ whenever $B_r=0$, at any
+$B_z$. Since $\alpha_1$ ($m_F=+1$) and $\beta_3$ ($m_F=-1$) carry
+\emph{different} values of this exactly conserved quantity, no on-axis
+process, however fast or slow, can connect them -- $H_{13}=0$ in
+Eq.~\eqref{eq:matrix} is not a coincidence of this particular Hamiltonian,
+it is required by symmetry. $\alpha_2$ and $\beta_4$, by contrast, are
+\emph{degenerate} in $m_F$ (both $m_F=0$), which is exactly why they are
+free to mix via the constant flip-flop term and are the only pair that can
+undergo genuine on-axis dynamics.
+
+\paragraph{Branch 1 (alpha1): frozen, by symmetry.} $\alpha_1$ therefore
+never moves, on-axis, for any field history -- confirmed both by this
+conservation argument and directly in code (Sec.~\ref{sec:status}). Since
+$\alpha_1$ already carries $m_I=+1/2$, this branch requires no dynamics to
+already be ``correct'' for the purpose of nuclear polarization.
+
+\paragraph{Branch 2 (alpha2 $\to$ beta4): a genuine, on-axis, adiabatic spin
+flip.} The $\alpha_2$--$\beta_4$ pair has a minimum energy gap of exactly
+$A$ at $B_z=0$ (Sec.~\ref{sec:matrix}) that never closes, so for essentially
+any realistic beam velocity this pair is crossed adiabatically: the atom
+stays on the same energy branch continuously through the reversal. Because
+that branch's asymptotic (Paschen--Back) identity swaps sign of $m_I$ on
+either side of the crossing, an atom entering as $\ket{m_J{=}{+}1/2,m_I{=}{-}1/2}$
+(the high-field limit of $\alpha_2$) exits as $\ket{m_J{=}{-}1/2,m_I{=}{+}1/2}$
+(the high-field limit of $\beta_4$) -- a real, physical flip of the nuclear
+spin projection, by the same adiabatic-fast-passage mechanism used to invert
+spins in NMR/ESR by sweeping a field through resonance. This is confirmed
+directly by the arrow diagram in Fig.~1 of Kannis et al.\ (2022)
+\cite{kannis2022spin}: the caption states explicitly that the arrows
+``indicate the initial $\ket{m_J,m_I}$ and the final $\ket{m_J',m_I'}$
+substates that the eigenenergies approach,'' with the $\alpha_2$ branch
+carrying an explicit $m_I$-flip arrow while the straight $\alpha_1$ line
+carries none.
+
+\paragraph{Convergence: how the two branches together give full polarization
+transfer.} Upstream of the Sona unit, a spin-selection stage leaves only
+$\alpha_1,\alpha_2$ populated, 50/50, with zero net nuclear polarization
+($m_I=+1/2$ and $m_I=-1/2$ equally populated) but full electron polarization
+(both have $m_J=+1/2$). Through the Sona region, $\alpha_1$ ends at
+$m_I=+1/2$ by \emph{not moving at all} (Branch 1); $\alpha_2$ ends at
+$m_I=+1/2$ by \emph{genuinely, adiabatically flipping} (Branch 2). Two
+different mechanisms, the same final nuclear projection on both branches --
+this convergence is what converts electron polarization into nuclear
+polarization, and it requires only $B_z$: neither branch needs $B_r$.
+
+\paragraph{Where $B_r$ fits: a loss channel, not a third branch.} $B_r$ is
+not part of either mechanism above. Its role is exactly what Kannis et al.\
+(2022) describe: an off-axis atom never actually sees $B=0$, only a field
+that changes direction by $180^\circ$ over a finite time, inducing
+``undesirable Larmor precession... and subsequent polarization losses.''
+Right at $B_z=0$, $\alpha_1$, $\alpha_2$, and the state about to become
+$\beta_4$ are all exactly degenerate (all at $A/4$ in $H_0$); a nonzero
+$B_r$ can then freely mix across this vanishing gap, diluting the clean
+Branch-1/Branch-2 outcome by inducing unwanted transitions among
+$\alpha_1,\alpha_2,\beta_3$ (Kannis et al.\ 2022's own ``alternative
+explanation'' paragraph: a time-varying radial component ``induces
+transitions from $\beta_3$ to $\alpha_2$ and from $\alpha_2$ to
+$\alpha_1$''). Sona's zero-crossing condition, Eq.~\eqref{eq:zerocrossing},
+exists specifically to suppress this off-axis leakage -- \emph{not} to
+enable Branch 1 or Branch 2, both of which proceed automatically, on-axis,
+regardless of speed (Branch 1 by symmetry; Branch 2 because the $A$-gap
+never closes).
+
+\paragraph{Reconciling with the ``pure states are exchanged'' language in
+the literature.} Sona (1967), Kponou et al.\ \cite{kponou2007}, and Engels
+et al.\ \cite{engels2024} describe the classical mechanism as an
+\emph{exchange} of the pure/stretched states, $\ket{F{=}1,m_F{=}{+}1}\to
+\ket{F{=}1,m_F{=}{-}1}$. This is consistent with, not contradictory to, the
+frozen-$\alpha_1$ picture above, once one notes that $m_F$ in that
+statement is naturally defined \emph{relative to the local holding field}
+at each end of the device (the physically relevant convention for an
+apparatus like a spinfilter, which itself measures relative to its own,
+local field direction) -- i.e.\ it is the rotating-frame bookkeeping
+mentioned at the top of this section. Since the entrance and exit holding
+fields point in \emph{opposite} directions (that is what a field reversal
+means), the same absolute, fixed-frame amplitude that never moved
+($\alpha_1$, $m_F=+1$ relative to the fixed lab axis throughout) is
+correctly reported as ``$m_F=-1$,'' i.e.\ $\beta_3$, relative to the
+now-reversed exit holding field -- with, as derived above, no Hamiltonian
+coupling ever invoked to produce that relabelling. The two forms of words
+(``frozen in the fixed frame,'' ``exchanged in the rotating frame'')
+describe the identical physical outcome; our code, and the analysis in this
+note, use the fixed-frame convention throughout because it is what a direct
+numerical integration of Eq.~\eqref{eq:fode} naturally produces, and because
+Branches 1 and 2 are both already visible in it without any further
+transformation.
+\label{sec:status}
+% =============================================================================
+
+Two complementary pieces of code now exist. \texttt{MagScan\_Ana4.py} (full
+listing in the Appendix) covers the field-map ingestion half of the
+pipeline described in Sec.~1: it takes the raw transversal magnetic field
+scans of the OPPIS Sona region (LCCS NewScanApp bench data: field vs.\
+position, for a grid of correction-coil current LCC and solenoid currents
+ICC1/ICC2) and turns them into the physical quantities that condition the
+Sona transition. A new, independent \texttt{sona} Python package (also
+listed in the Appendix) now implements the quantum-mechanical propagation
+of Eq.~\eqref{eq:fode} itself -- the piece explicitly marked ``not yet
+implemented'' in the previous version of this note. The two are not yet
+wired together (the propagation code currently reads a generic $(z,B_z[,B_r])$
+CSV rather than \texttt{MagScan\_Ana4.py}'s own data structures directly;
+Sec.~\ref{sec:plan} item 5), but they use a common field-derivative
+convention (Eq.~\eqref{eq:br}) and connecting them is a small, well-defined
+remaining step rather than new development.
+
+\subsection{Data ingestion and field-profile extraction}
+The raw CSV scan (columns: position, LCC, ICC1, ICC2, field) is cleaned
+(non-numeric footer rows dropped, ICC2$=0$ points removed as a known
+power-supply-settling artifact) and split into the requested ICC2 plane.
+For every (LCC, ICC1) combination this gives a clean $B_z(z)$ profile over
+the $\SI{40}{}$--$\SI{140}{cm}$ range of the bench.
+
+\subsection{Zero-crossing position and gradient}
+For each profile, the code locates all sign changes of $B_z(z)$ by linear
+interpolation between bracketing points, giving the crossing position
+$x_0$ and the local gradient $dB_z/dz$ by a forward finite difference (this
+is exactly the quantity that enters the zero-crossing condition of
+Eq.~\eqref{eq:zerocrossing}). Profiles with more than one crossing (which do
+occur, since the OPPIS Sona region is more complex than the idealized
+two-coil geometry of Ch.~3) are all recorded, with the highest-$z$ crossing
+(the one the beam meets first) taken as the ``primary'' one for the summary
+plots.
+
+\subsection{Adiabaticity check against Sona's threshold}
+\texttt{compute\_sona\_parameters()} evaluates the Kponou/Sona upper bound on
+$|dB_z/dz|$ (right-hand side of Eq.~\eqref{eq:zerocrossing}, H case) for a
+given beam kinetic energy and radius, so that the measured gradient at each
+crossing can be checked against it -- a first, purely semiclassical sanity
+check that a given operating point is in the non-adiabatic (``sudden'')
+regime that Sona's original argument requires.
+
+\subsection{Effective Sona frequency and energy-scale estimate}
+\texttt{compute\_sona\_freq()} implements a simple kinematic picture inspired
+by \cite{kannis2023,engels2024}: an atom moving at velocity $v$ through the
+radial field $B_r(z)=-\tfrac12(dB_z/dz)\,r$ effectively experiences an
+oscillating transverse field between the two inflection points of $B_z(z)$
+(i.e.\ the two zeros of $dB_z/dz$ flanking the reversal), separated by a
+spatial wavelength $\lambda$. This defines an effective drive frequency
+$f=v/\lambda$ and a series of candidate transition energies
+$\Delta E_n = n\,h f$ ($n=1,2,\dots$), which are plotted alongside the known
+Breit--Rabi splittings at low field for comparison. \textbf{This is a
+heuristic, order-of-magnitude proxy for the driving frequency seen by the
+atom -- it is not a substitute for solving Eq.~\eqref{eq:fode}}, but it is
+useful as a quick, model-independent check of which harmonic could be
+resonant with a given hyperfine splitting for a given coil setting, before
+running the full coupled-state calculation.
+
+\subsection{Correlation with measured polarization}
+The script also loads the independently measured beam polarization vs.\ LCC
+scans and overlays/correlates them with the field-derived quantities above
+(zero-crossing position, gradient, effective frequency): a set of summary,
+scatter, and phase-space plots (Sec. ``Correlation plots A/B/C'' in the
+code) lets us see, empirically, whether the observed polarization
+oscillations track the field geometry -- which is the experimental
+observation (thesis Ch.~5) that originally motivated the full quantum
+treatment of Ch.~6.
+
+\subsection{Interactive inspection tools}
+For day-to-day use on the bench, the script provides interactive
+(cursor/slider-driven) figures to inspect a single $B_z(z)$, $dB_z/dz(z)$ or
+$B_r(z,r)$ profile for any (LCC, ICC1) pair, and grid summaries of the
+zero-crossing position and gradient across the whole scan.
+
+\subsection{Quantum propagation implementation (\texttt{sona} package)}
+\label{sec:quantum-implementation}
+
+The \texttt{sona} package implements Eq.~\eqref{eq:fullH}--\eqref{eq:fode}
+directly, as four small, independently tested modules (automated test
+suite, all executed tests passing; full listings in the Appendix; the
+numerical cross-check against an independent Mathematica implementation is
+given in Sec.~\ref{sec:nbcheck}):
+
+\begin{description}
+\item[\texttt{constants.py}] Physical constants and a single swappable
+parameter set for $A$ (and the derived $B_c$) that switches the entire
+calculation between the metastable and ground-state cases of
+Table~\ref{tab:groundvsmeta} -- one enum argument, not a separate code
+path.
+\item[\texttt{hamiltonian.py}] Builds $H_0$ and $V(B_z,B_r,\phi)$ in the
+exact $B{=}0$ eigenbasis of $H_0$ (see the basis-convention note,
+Sec.~\ref{sec:matrix}). Validated three independent ways: (i) every one of
+the 16 matrix entries reproduces Kannis (2023) Eq.~6.23 term-for-term;
+(ii) inserting them into Eq.~\eqref{eq:fode} reproduces Eq.~6.24a--d;
+(iii) numerically diagonalizing $H_0+V(B_z,B_r{=}0)$ reproduces the
+closed-form Breit--Rabi energies (thesis Eq.~3.18a--d) to $\mathrm{rtol}=10^{-10}$,
+for both atom states, across a field sweep spanning $\pm3B_c$ -- the
+strongest available check, since it compares against a completely
+independent, closed-form calculation.
+\item[\texttt{propagator.py}] Integrates Eq.~\eqref{eq:fode} for a single
+atom at fixed $(r,v)$ -- but in the \emph{Schr\"odinger}, not interaction,
+picture: the code tracks $a_k(t)=c_k(t)\,e^{-iE_kt/\hbar}$ directly, so that
+the explicit phase factors $e^{i\omega_{kj}t}$ of Eq.~\eqref{eq:fode} never
+need to be computed or tracked separately. Since $|a_k(t)|^2=|c_k(t)|^2$ at
+every $t$ (the extra factor has unit modulus), this changes nothing
+measurable and removes one entire layer of bookkeeping from the numerical
+implementation; the interaction-picture form, Eq.~\eqref{eq:fode}, is
+still the right one for the analytic/by-hand arguments elsewhere in this
+note (the harmonic/photon picture of Sec.~4.4). Written out, the four
+coupled equations the code integrates are
+\begin{align}
+    i\hbar\,\dot a_1 &= \left[\tfrac{A}{4}-\tfrac{B_z}{2}(\alpha+\beta)\right]a_1
+        - \tfrac{B_r}{2\sqrt2}(\alpha+\beta)e^{-i\phi}a_2
+        - \tfrac{B_r}{2\sqrt2}(\alpha-\beta)e^{-i\phi}a_4 \notag\\
+    i\hbar\,\dot a_2 &= -\tfrac{B_r}{2\sqrt2}(\alpha+\beta)e^{i\phi}a_1
+        + \tfrac{A}{4}a_2
+        - \tfrac{B_r}{2\sqrt2}(\alpha+\beta)e^{-i\phi}a_3
+        + \tfrac{B_z}{2}(\alpha-\beta)a_4 \notag\\
+    i\hbar\,\dot a_3 &= -\tfrac{B_r}{2\sqrt2}(\alpha+\beta)e^{i\phi}a_2
+        + \left[\tfrac{A}{4}+\tfrac{B_z}{2}(\alpha+\beta)\right]a_3
+        + \tfrac{B_r}{2\sqrt2}(\alpha-\beta)e^{i\phi}a_4 \notag\\
+    i\hbar\,\dot a_4 &= -\tfrac{B_r}{2\sqrt2}(\alpha-\beta)e^{i\phi}a_1
+        + \tfrac{B_z}{2}(\alpha-\beta)a_2
+        + \tfrac{B_r}{2\sqrt2}(\alpha-\beta)e^{-i\phi}a_3
+        - \tfrac{3A}{4}a_4
+    \label{eq:fode-explicit}
+\end{align}
+i.e.\ simply Eq.~\eqref{eq:matrix} read off row by row -- note $\dot a_1$
+has no $a_3$ term (and vice versa), the algebraic statement of $H_{13}=0$.
+
+These are solved, not with a generic adaptive integrator, but via
+piecewise-constant unitary evolution: the flight is chopped into steps
+small enough that $H(t)$ is effectively constant within each one, for which
+the Schr\"odinger equation has an \emph{exact} solution,
+\begin{equation}
+    \mathbf{a}(t+\Delta t)=\exp\!\left(-\frac{i}{\hbar}H\!\left(t+\frac{\Delta t}{2}\right)\Delta t\right)\mathbf{a}(t).
+    \label{eq:propagator-step}
+\end{equation}
+Since $H$ is Hermitian, this is computed in three steps rather than a
+generic matrix exponential: (i) diagonalize $H$ at the step's midpoint,
+giving its four instantaneous eigenvalues $E_k$ and eigenvectors
+$\ket{\psi_k}$; (ii) apply the phase $e^{-iE_k\Delta t/\hbar}$ to each
+eigenvector's component -- exact, since evolution under a genuinely
+constant Hamiltonian is just each eigenstate accumulating phase at its own
+rate; (iii) rotate back into the $(\alpha_1,\alpha_2,\beta_3,\beta_4)$
+basis for the next step. This guarantees $\mathbf a$ stays normalized to
+machine precision at every step, regardless of step size -- not a property
+that must be checked after the fact.
+
+The step size $\Delta t$ is not fixed a priori: the field is scanned in
+advance, the largest energy gap $\max_k|E_k-E_j|$ found anywhere along the
+whole trajectory is taken as the (deliberately conservative) worst case,
+and $\Delta t=2\pi/(30\,\omega_{\max})$ is set to resolve that fastest
+oscillation with 30 samples per period; this one value is then held fixed
+for every step of that trajectory. Convergence was checked explicitly by
+varying the oversampling factor from $5\times$ to $240\times$: even the
+coarsest setting agreed with the finest to 1 part in $10^6$, and the
+default ($30\times$) agreed with the finest to $2.5\times10^{-8}$ -- solidly
+converged, with comfortable margin, rather than assumed.
+
+Cross-checked against an independent adaptive ODE solver
+(\texttt{scipy.integrate.solve\_ivp}). Reproduces, directly and exactly,
+both branches of Sec.~\ref{sec:frame}: $\alpha_1$ population stays at
+exactly 1.0 on-axis for any field history (Branch 1), and
+$\alpha_2\to\beta_4$ tracks the expected adiabatic-to-diabatic trend as
+velocity is scanned (Branch 2).
+\item[\texttt{beam.py}] Integrates single-particle results over a Gaussian
+radial beam profile, $w(r)\propto(r/\sigma^2)e^{-r^2/2\sigma^2}$ (Simpson's
+rule on a truncated grid, normalized by the grid's own weight integral
+rather than an assumed exact 1). Validated: the weight normalizes to 1
+(checked against an independent \texttt{scipy.integrate.quad}, not just the
+code's own Simpson integration); beam-averaged populations sum to 1;
+$\sigma\to0$ recovers the on-axis result; larger $\sigma$ gives
+monotonically more $B_r$-driven leakage (Sec.~\ref{sec:frame}), matching
+the physical trend argued for before the code was written.
+\end{description}
+
+A synthetic two-opposed-coil field (on-axis Biot--Savart for two circular
+loops) stands in for a real OPERA2D or bench-measured field map until one is
+connected (Sec.~\ref{sec:plan} item 5); the field-provider interface itself
+is generic (reads any $(z,B_z[,B_r])$ CSV, deriving $B_r$ from $B_z$ via
+Eq.~\eqref{eq:br} if not supplied directly), so swapping in a real map is a
+data change, not a code change.
+
+
+\subsection{Independent cross-check against a Mathematica implementation}
+\label{sec:nbcheck}
+
+A separate implementation (\texttt{metastable\_H\_time.nb}) integrates the
+\emph{interaction-picture} equations, Eq.~\eqref{eq:fode}, with Mathematica's
+\texttt{NDSolve} for metastable H: \SI{1}{keV}, $\lambda=\SI{20}{cm}$,
+$B_z=-B_{\max}\sin(2\pi t/T)$ with $B_{\max}=\SI{10}{mT}$, $B_r=-(r/2)\,dB_z/dz$
+with $z=vt$, $r=\SI{1}{cm}$, one full period, eigenvalues and eigenvectors of
+$H_0$ hard-coded. It was compared with the \texttt{sona} package as follows.
+\begin{itemize}
+\item \textbf{Hamiltonian.} A Hamiltonian built independently from the spin
+operators, $H=A\,\mathbf I\!\cdot\!\mathbf J-(g_J\mu_B\mathbf J+g_I\mu_N\mathbf I)\!\cdot\!\mathbf B$,
+rotated into the $(\alpha_1,\alpha_2,\beta_3,\beta_4)$ basis, agrees with
+$H_0+V$ of \texttt{hamiltonian.py} to $\sim10^{-16}\,hA$ for several
+$(B_z,B_r,\phi)$: same operator, same basis.
+\item \textbf{Dynamics.} Both \texttt{propagate()} (matrix exponential) and
+\texttt{propagate\_solve\_ivp\_reference()} reproduce an independent DOP853
+replica of the notebook to $\sim10^{-5}$ in the final populations
+(Table~\ref{tab:nbcheck}); the norm is conserved to $10^{-9}$. As expected,
+$\beta_4$ survival decreases with radius: $0.9999$ ($r{=}0$), $0.9970$
+(\SI{2.5}{mm}), $0.9938$ (\SI{5}{mm}), $0.9931$ (\SI{1}{cm}), $0.9689$ (\SI{2}{cm}).
+\end{itemize}
+\begin{center}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Initial state & $|c_{\alpha_1}|^2$ & $|c_{\alpha_2}|^2$ & $|c_{\beta_3}|^2$ & $|c_{\beta_4}|^2$ \\
+\midrule
+$\beta_4$  & 0.0006 & 0.0018 & 0.0045 & 0.9931 \\
+$\alpha_1$ & 0.1360 & 0.7105 & 0.1490 & 0.0045 \\
+$\alpha_2$ & 0.2517 & 0.0360 & 0.7105 & 0.0018 \\
+$\beta_3$  & 0.6117 & 0.2517 & 0.1360 & 0.0006 \\
+\bottomrule
+\end{tabular}
+\label{tab:nbcheck}
+\end{center}
+Remaining differences are conventions, not physics: the value of $A$ (see the
+note in Sec.~\ref{sec:groundvsmeta}); the particle mass used for $v$ (the
+notebook uses the H-atom mass, the package \texttt{M\_PROTON}, so its $v$ is
+$0.027\%$ higher -- the atomic mass is the physical choice); Schr\"odinger vs.\
+interaction picture ($|a_k|^2=|c_k|^2$); and hard-coded vs.\ computed
+eigensystem. The table is suitable as a regression test for the package.
+
+\begin{center}
+\begin{tabular}{@{}p{0.32\textwidth}p{0.63\textwidth}@{}}
+\toprule
+\textbf{Pipeline stage} & \textbf{Status} \\
+\midrule
+Field map ingestion \& cleaning & \checkmark\ implemented (measured OPPIS bench scans, \texttt{MagScan\_Ana4.py}) \\
+Zero-crossing / gradient extraction & \checkmark\ implemented \\
+Sona adiabaticity threshold (Eq.~\ref{eq:zerocrossing}) & \checkmark\ implemented (semiclassical) \\
+Effective frequency / energy-scale proxy & \checkmark\ implemented (kinematic estimate) \\
+Measured-polarization overlay \& correlation & \checkmark\ implemented \\
+Breit--Rabi Hamiltonian $H_0+V$ (build \& diagonalize) & \checkmark\ implemented \& validated (\texttt{hamiltonian.py}) \\
+Generic field provider (CSV, any geometry) & \checkmark\ implemented (\texttt{fields/csv\_field.py}) \\
+Coupled FODE solver for $c_k(r,t)$ (Eq.~\ref{eq:fode}) & \checkmark\ implemented \& validated (\texttt{propagator.py}) \\
+Integration over beam radial profile & \checkmark\ implemented \& validated (\texttt{beam.py}) \\
+Cross-check vs.\ independent Mathematica code & \checkmark\ agrees to $\sim10^{-5}$ (Sec.~\ref{sec:nbcheck}) \\
+Current sweep / simulated polarization vs.\ current & \ding{55}\ not yet implemented -- next step (Sec.~\ref{sec:plan}) \\
+Beam energy-spread averaging & \ding{55}\ not yet implemented \\
+Real (OPERA2D / bench-measured) field map as propagation input & \ding{55}\ not yet connected \\
+Deuterium ($I=1$, 6-state) & \ding{55}\ not yet implemented \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =============================================================================
+\section{Plan for further development}
+\label{sec:plan}
+% =============================================================================
+
+The static Hamiltonian, field interpolation, coupled-FODE propagation, and
+beam-radial-averaging steps of the original plan (items 1--3 and part of 5
+below, in their original numbering) are now implemented and validated
+(Sec.~\ref{sec:quantum-implementation}). The remaining steps, updated in
+light of the two-branch mechanism of Sec.~\ref{sec:frame}:
+
+\begin{enumerate}[label=\textbf{(\arabic*)}]
+
+    \item \textbf{Three-way diagnostic, not a single transfer number.}
+    Before trusting any current scan, rework how populations are reported
+    to separate the three physically distinct quantities identified in
+    Sec.~\ref{sec:frame}: $\alpha_1$ fidelity (Branch 1, should stay
+    $\approx1$ on-axis -- already confirmed), $\alpha_2\to\beta_4$ adiabatic
+    fidelity (Branch 2, should track the Breit--Rabi curve and be
+    essentially velocity-independent given the $A$-sized gap -- already
+    confirmed), and $B_r$-driven leakage among $\alpha_1,\alpha_2,\beta_3$
+    (the loss channel, expected to grow with beam radius and with how
+    ``sudden'' the crossing is relative to the local Larmor precession,
+    $\omega_L=\frac{e}{2m_e}B_r$). Lumping these into one ``population that
+    left $\alpha_1$'' number, as an earlier draft of this analysis did,
+    obscures which physics is responsible for any given feature of a
+    current-scan curve.
+
+    \item \textbf{Current scan and validation against the thesis.}
+    Sweep the Sona coil current (equivalently, LCC/ICC1 in the bench field
+    maps), rescaling the field amplitude, and evaluate the beam-averaged
+    propagation (item 1's three quantities) at each setting. Validate
+    against (i) the published simulated curves of \cite{kannis2023} for a
+    simplified field, and (ii) our own OPPIS polarization measurements
+    already loaded by \texttt{MagScan\_Ana4.py}, closing the loop between
+    the field-map analysis of Sec.~\ref{sec:status} and the full quantum
+    dynamics. This is the single remaining validation checkpoint before the
+    code can be trusted for predictive OPPIS design work.
+
+    \item \textbf{Beam energy spread.} Every trajectory currently uses a
+    single, exact beam kinetic energy. A real beam has a spread; since
+    Branch 2's adiabaticity depends on velocity (Sec.~\ref{sec:frame}),
+    this needs to be added as a further weighted average, structurally
+    identical to the existing radial (beam.py) average, before quantitative
+    comparison to data.
+
+    \item \textbf{Connect to real field data.} Feed \texttt{MagScan\_Ana4.py}'s
+    processed bench scans (or, longer-term, an OPERA2D finite-element
+    export) into the propagation code's generic field-provider interface,
+    replacing the synthetic two-coil test field used for validation so far
+    -- first for the simplified two-solenoid bench geometry, then for the
+    full OPPIS geometry.
+
+    \item \textbf{Deuterium extension.} The current implementation supports
+    hydrogen ($I=1/2$, 4 states) only; deuterium ($I=1$, 6 states, thesis
+    Eq.~6.25) is a structurally similar, currently unimplemented extension,
+    needed for the metastable-D bench measurements referenced in
+    Sec.~\ref{sec:status}.
+
+    \item \textbf{Consolidate constants and documentation.} Adopt one value of
+    $A_{2S}$ and use the H-atom mass for $v$; add the Mathematica notebook and
+    the regression test of Table~\ref{tab:nbcheck} to the repository; bring
+    the repository \texttt{README} (which still quotes $B_c=63$\,mT for the
+    metastable state instead of 6.34\,mT) and the tracked code (batched
+    Hamiltonian, \texttt{beam.py}) in line with this note.
+
+    \item \textbf{Packaging for the PSTP contribution.}
+    Once validated, wrap the above into a small set of reusable functions
+    with the interactive/summary plotting style already used in
+    \texttt{MagScan\_Ana4.py}, to produce the figures for the oral
+    contribution at PSTP (Mito, Japan): measured field maps, simulated vs.\
+    measured polarization oscillations, and the physical interpretation in
+    terms of the two-branch mechanism and its off-axis degradation.
+
+\end{enumerate}
+
+% =============================================================================
+\section*{Appendix: current code listing}
+% =============================================================================
+\addcontentsline{toc}{section}{Appendix: current code listing}
+
+Two complete, current pieces of code are reproduced below. First, the four
+modules of the \texttt{sona} quantum-propagation package
+(Sec.~\ref{sec:quantum-implementation}), covering the Hamiltonian, the
+propagator, and beam averaging. Second, \texttt{MagScan\_Ana4.py}, covering
+the field-map processing, adiabaticity check, kinematic frequency estimate,
+and polarization-correlation stages. As noted in Sec.~\ref{sec:plan}, the
+two are not yet wired together; connecting them is the main remaining
+software-integration step.
+
+\subsection*{\texttt{sona} package: quantum propagation}
+\addcontentsline{toc}{subsection}{\texttt{sona} package: quantum propagation}
+
+\lstinputlisting[caption={\texttt{constants.py} --- atomic parameters, with the swappable metastable/ground-state parameter set.}]{code/constants.py}
+\lstinputlisting[caption={\texttt{hamiltonian.py} --- $H_0$ and the Zeeman interaction matrix $V$, in the exact $B{=}0$ eigenbasis.}]{code/hamiltonian.py}
+\lstinputlisting[caption={\texttt{propagator.py} --- the matrix-exponential unitary propagator.}]{code/propagator.py}
+\lstinputlisting[caption={\texttt{beam.py} --- Gaussian radial beam averaging.}]{code/beam.py}
+
+\subsection*{Field-map processing: \texttt{MagScan\_Ana4.py}}
+\addcontentsline{toc}{subsection}{Field-map processing: \texttt{MagScan\_Ana4.py}}
+
+\lstinputlisting[caption={\texttt{MagScan\_Ana4.py} --- field map processing and Sona parameter analysis (current status)}]{MagScan_Ana4.py}
+
+% =============================================================================
+\begin{thebibliography}{9}
+
+\bibitem{kannis2023}
+C.~Kannis,
+\emph{Theoretical and experimental investigation of Sona transitions},
+Ph.D.\ thesis, RWTH Aachen University (2023).
+
+\bibitem{engels2024}
+R.~Engels \emph{et al.},
+\emph{New Insights into Sona Transitions}, (2024).
+
+\bibitem{kponou2007}
+A.~Kponou \emph{et al.},
+\emph{Sona Transition Studies in the RHIC OPPIS}, Proc.\ PSTP2007 / AIP Conf.\ Proc.
+
+\bibitem{antishev2008}
+E.~P.~Antishev and A.~S.~Belov,
+\emph{Study of Adiabaticity of Hydrogen Atoms Spin Motion in Changing
+Magnetic Fields}, AIP Conf.\ Proc.\ \textbf{980}, 263 (2008),
+Proc.\ PSTP2007.
+
+\bibitem{kannis2022spin}
+C.~S.~Kannis \emph{et al.},
+\emph{New Application of a Sona Transition Unit: Observation of Direct
+Transitions Between Quantum States With Energy Differences of 10~neV and
+Below}, JPS Conf.\ Proc.\ \textbf{37}, 021209 (2022),
+Proc.\ 24th Int.\ Spin Symposium (SPIN2021).
+
+\bibitem{kolachevsky2009}
+N.~Kolachevsky, A.~Matveev, J.~Alnis, C.~G.~Parthey, S.~G.~Karshenboim,
+and T.~W.~H\"ansch,
+\emph{Measurement of the $2S$ Hyperfine Interval in Atomic Hydrogen},
+Phys.\ Rev.\ Lett.\ \textbf{102}, 213002 (2009).
+
+\end{thebibliography}
+
+\end{document}
